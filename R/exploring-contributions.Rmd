@@ -1,0 +1,315 @@
+---
+title: "Exploring the 2015 PHP framework survey by Sitepoint"
+author: "Jesus M. Castagnetto"
+date: "April 01, 2015"
+output: html_document
+---
+
+## Background
+
+Sitepoint has published the results of their 2015 PHP Framework popularity survey[^sitepoint]. In that post they show that the survey gives a very large edge to Laravel. The people at Sitepoint were also nice enought to publish their properly anonymized dataset in a github repo[^sitepoint-github] 
+
+[^sitepoint]: http://www.sitepoint.com/best-php-framework-2015-sitepoint-survey-results/
+
+[^sitepoint-github]: https://github.com/sitepoint-editors/php-fw-survey-2015
+
+So I went ahead, and forked their repo and fired up R to give this data a go.
+
+## Exploring the dataset
+
+I read the survey into a data frame, and looked at the overall structure:
+
+```{r warning=FALSE, message=FALSE}
+library("dplyr")
+library("reshape2")
+library("ggplot2")
+library("knitr")
+library("ROCR")
+library("rpart")
+library("rpart.plot")
+survey <- tbl_df(read.csv("../dump/survey.csv", stringsAsFactors = FALSE))
+glimpse(survey)
+```
+
+It seems that the first 30 columns related to personal
+information and preferences for each respondent (identified by the
+`id` field). The next 22 columns comprise a very sparse matrix that
+encodes what frameworks (including a write-in option) the respondent
+has made contributions.
+
+So I decided to look extract that section of the dataset and do some
+quick analysis looking at the frequencies, and how it compared with
+the results of framework popularity.
+
+The reason to do that, is to try and get a feeling on the extent to which
+each project (framework) has a community that not only benefits from it, but
+also works towards improving it by contributing to the code, documentation, etc.
+
+Let's look first at the contributions to the list of selected frameworks:
+
+```{r results='asis'}
+# the framework contribution "matrix"
+contrib <- survey %>% select(id,laravel:agavi)
+ncontrib <- as.data.frame(
+  table(rowSums(contrib[, -1], na.rm=TRUE))) %>%
+  mutate(pFreq=round(100*Freq/nrow(contrib), 2))
+colnames(ncontrib) <- c("Number of frameworks",
+                       "Count", "Percent of total")
+kable(ncontrib, align=c("c", "c", "c"),
+      caption="Distribution of number of frameworks contributed to by respondents")
+```
+
+So, about `r 100 - ncontrib[1,3]`% of survey respondents contribute
+to at least one framework (without including the "write-ins")
+
+Now, I will convert the data from a "wide" to a "long"
+format, using the `reshape2` package, and also mangle the
+the write-ins (`other` field) to be able to combine that 
+with the other data. 
+
+```{r}
+contrib.long <- melt(contrib, id.vars = "id",
+                     variable.name = "framework", 
+                     value.name = "count",
+                     na.rm = TRUE)
+head(contrib.long)
+summary(contrib.long)
+```
+
+It seems that the `count` field is not informative at all, so we can safely
+remove it.
+
+```{r}
+contrib.long <- contrib.long[,1:2]
+```
+
+While mangling the "write-ins", I noticed a large amount of empty
+answers, which is reasonable if you consider that the options 
+given in the survey contained the most popular frameworks.
+
+```{r}
+# the write-ins
+contrib.writeins <- survey[,c(1,53)]
+nrow(contrib.writeins)
+head(contrib.writeins)
+# let's remove the empty rows
+contrib.writeins <- subset(contrib.writeins, other != "")
+nrow(contrib.writeins)
+head(contrib.writeins)
+```
+
+In the end there are only `r nrow(contrib.writeins)` write-in answers out 
+of `r nrow(contrib)` responses. A proportion of about 
+`r round(nrow(contrib.writeins)/nrow(contrib) * 100, 2)`% of answers to the survey.
+
+Finally, I combined the two data frames to get all possible 
+frameworks to which people are contributing. 
+Also, went ahead and removed the string " framework" 
+from the framework's name, to help group better, because there were entries
+such as "xyz" and "xyz framework".
+
+```{r}
+colnames(contrib.writeins) <- c("id", "framework")
+contrib.long <- rbind(contrib.long, contrib.writeins)
+contrib.long$framework <- gsub(" framework","",
+                               contrib.long$framework)
+```
+### Computing the frequencies of contributions
+
+I used `dplyr` to quickly summarize the results in the long data
+frame, calculating the frequency count and percent for each
+framework. 
+
+One thing I noticed is that there was a small number of
+entries such as: "_i also contribute to php itself_" or
+"_took part in customer's development, also fixed codeigniter long tim_", and most of these anomalous "frameworks" were single cases,
+
+Using this summary, I made a bar chart of the top 20 frameworks
+to which people contribute, with the package `ggplot2`.
+
+```{r}
+contrib.summ <- contrib.long %>% 
+  group_by(framework) %>% 
+  summarise(freq=n(), pfreq=100*n()/nrow(contrib.long)) %>% 
+  arrange(desc(freq))
+contrib.summ$framework <- factor(contrib.summ$framework, 
+                                levels=rev(contrib.summ$framework),
+                                ordered=TRUE)
+top20 <- contrib.summ[1:20,]
+
+ggplot(top20, aes(x=framework, y=pfreq)) + 
+  geom_bar(stat="identity", fill=rainbow(20), alpha=0.7) +
+  geom_text(label=paste0(" ",round(top20$pfreq,1), "%"), hjust=0, size=4.5) +
+  xlab("PHP Framework") +
+  ylab("Frequency (% of total contributions)") +
+  ylim(c(0,18)) +
+  ggtitle("Top 20 PHP frameworks by contribution") +
+  coord_flip() +
+  theme_bw() +
+  theme(axis.text=element_text(size=14),
+        axis.title=element_text(size=16, face="bold"),
+        plot.title=element_text(size=18, face="bold"))
+```
+
+## Comparisons with the votes for popular frameworks
+
+Let's now look at the correspondence between frameworks used for work and 
+personal projects, and whether the respondent contributes
+to at least one framework.
+
+```{r}
+personal <- survey[,c(1,5:11,21,30)]
+survey$samefw <- survey$fw.work.choice == survey$fw.personal.choice
+survey$contributes <- rowSums(contrib[, -1], na.rm=TRUE) > 0
+(xt1 <- xtabs( ~ samefw + contributes, survey))
+```
+
+Out of every ~7 people who use different frameworks for work and personal projects,
+1 contributes to at least one of those frameworks. And, out of ~5 people who
+use the same framework at work and personal projects, 1 contributes to at least
+one framework.
+
+
+```{r}
+xt2 <- round(100*xt1 / nrow(survey), 1)
+```
+
+If we look at this in overall percentages of respondents, we find that:
+
+- `r xt2[1,1]`% use different frameworks for work and personal
+  projects, and do not contribute to any framework
+- `r xt2[1,2]`% use different frameworks but contribute to at
+  least one framework
+- `r xt2[2,1]`% use the same framework for work and personal
+  projects, but do not contribute to any framework
+- `r xt2[2,2]`% use the same framework and contribute to at
+  least to one of them
+
+Will there be a difference between contributions for the most popular framework
+(according to Sitepoint's 2015 survey): Laravel? How about for the second most
+popular: Symfony2?
+
+Again, we use dplyr to summarize this data. First for the use at work, filtering
+for the cases where the total number of entries of at least 20 for the framework,
+and for entries with an empty name:
+
+```{r}
+contrib_fw_work <- survey %>% 
+  select(id, fw.work.choice, contributes) %>% 
+  group_by(fw.work.choice) %>% 
+  summarise(ncontrib=sum(contributes), ntotal=n()) %>% 
+  filter(ntotal >= 20 & fw.work.choice !="" ) %>% 
+  mutate(pcontrib=ncontrib/ntotal) %>% 
+  arrange(desc(pcontrib))
+contrib_fw_work %>% filter(fw.work.choice %in% c("Laravel", "Symfony2"))
+```
+
+And next for the personal use:
+
+```{r}
+contrib_fw_personal <- survey %>% 
+  select(id, fw.personal.choice, contributes) %>% 
+  group_by(fw.personal.choice) %>% 
+  summarise(ncontrib=sum(contributes), ntotal=n()) %>% 
+  filter(ntotal >= 20 & fw.personal.choice !="" ) %>% 
+  mutate(pcontrib=ncontrib/ntotal) %>% 
+  arrange(desc(pcontrib))
+contrib_fw_personal %>% filter(fw.personal.choice %in% c("Laravel", "Symfony2"))
+```
+
+So Laravel (the most popular framework) has a community engamement (contribution) of
+about 15-16%, and Symfony2 something between 23-24%.
+
+If we look at the top 3 frameworks as measured by contributions, the situation
+is quite different than the popularity statistics:
+
+```{r results='asis'}
+kable(contrib_fw_work[1:3,], digits = 2, 
+      caption="Ranking of frameworks used at work by contribution")
+```
+
+```{r}
+kable(contrib_fw_personal[1:3,], digits = 2, 
+      caption="Ranking of frameworks used for personal projects by contribution")
+```
+
+It is interesting that these are frameworks that are quite mature and have been
+around for quite some time.
+
+## Modeling contribution
+
+The following is not strict modeling, at best it is a preliminary
+exploration on trying to figure out if it is possible to 
+understand contributions in terms of the variables acquired.
+
+First, we need to calculate the base accuracy, i.e. assigning
+to all rows the most frequent value for contribution (`FALSE`).
+
+```{r}
+(base_acc <- sum(survey$contributes==FALSE) / nrow(survey))
+```
+
+Then, we try a logistic regression (why not?), and let's not
+worry about possible colinearity and other hairy issues.
+
+```{r}
+survey$age.group <- factor(survey$age.group)
+survey$education <- factor(survey$education)
+logmodel <- glm(contributes ~ samefw + age.group + years.php +
+                years.programming + education + numframeworks,
+                data=survey, family="binomial")
+summary(logmodel)
+logpred <- predict(logmodel, type="response")
+(logct <- table(logpred >= 0.5, survey$contributes))
+(log_acc <- (logct[1,1] + logct[2,2]) / nrow(survey))
+```
+
+The logistic model seem to indicate that the total number of years
+of programming experience is not as significative, as, for example,
+the number of year programming in PHP, at least to predict 
+contributions to PHP frameworks.
+
+As we can see there is a slight improvement in the accuracy using
+this naive model, going from `r base_acc` (the base value)
+to `r log_acc`, a difference of just
+$`r log_acc - base_acc`$
+
+We can now plot and calculate the AUC that we can expect 
+with this model.
+
+```{r}
+rpred1 <- prediction(logpred, survey$contributes)
+perf1 <- performance(rpred1, measure="tpr", x.measure="fpr")
+plot(perf1, main="ROC curve for logistic model")
+abline(a=0, b=1, lty="dashed", col="blue")
+(auc1 <- as.numeric(performance(rpred1, "auc")@y.values))
+```
+
+Better than the baseline of 0.5, but not that great. Also,
+this model gives us still a great number of false negatives:
+people predicted not to contribute, but that do otherwise.
+
+Finally we will try to use a classification tree, and see if 
+can get a better model. 
+
+
+```{r}
+treemodel <- rpart(contributes ~ samefw + age.group + years.php +
+               years.programming + education + numframeworks,
+               data=survey,
+               method = "class", cp=0.001)
+prp(treemodel)
+treepred <- predict(treemodel, type="class")
+(treect <- table(treepred, survey$contributes))
+(tree_acc <- (treect[1,1] + treect[2,2]) / nrow(survey))
+```
+
+The resulting tree is a bit complex, and might be overfitted, and
+as we can see, affords a slight improvement in the accuracy, 
+going from `r base_acc` (the base value)
+to `r log_acc`, a difference of just
+$`r log_acc - base_acc`$
+
+Bottomline: I am not convinced that we can model contribution using the
+variables collected in this survey. Of course, that was not the goal of
+the survey, so it there is no surprise there.
