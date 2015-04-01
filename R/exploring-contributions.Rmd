@@ -3,14 +3,14 @@ title: "Exploring the 2015 PHP framework survey by Sitepoint"
 author: "Jesus M. Castagnetto"
 date: "April 01, 2015"
 output:
-  pdf_document:
-    toc:
-    - yes
   html_document:
     keep_md:
     - yes
     self-contained:
     - no
+    toc:
+    - yes
+  pdf_document:
     toc:
     - yes
 ---
